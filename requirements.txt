@@ -1,0 +1,12 @@
+PyQt5==5.15.11
+PyQt-Fluent-Widgets==1.11.2
+opencv-python==4.6.0.66
+Pillow>=9.0.0
+numpy>=1.24.0,<2.0.0
+torch
+torchvision
+ultralytics
+
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# pip install PyQt-Fluent-Widgets -i https://pypi.org/simple/
