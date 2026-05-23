@@ -80,12 +80,14 @@ def build_integrated_result(
     timeline = []
     for p in plate_items:
         timeline.append({
-            "frame":      p["frame"],
-            "time_sec":   p["time_sec"],
-            "kind":       "plate",
-            "ref_id":     p["plate_id"],
-            "label":      p["text"],
-            "confidence": p["ocr_confidence"],
+            "frame":        p["frame"],
+            "time_sec":     p["time_sec"],
+            "kind":         "plate",
+            "ref_id":       p["plate_id"],
+            "label":        p["text"],
+            "confidence":   p["ocr_confidence"],
+            "crop_path":    p.get("crop_path"),       # 썸네일
+            "image_base64": p.get("image_base64"),    # 썸네일 (base64 fallback)
         })
     for s in sign_items:
         timeline.append({
@@ -95,6 +97,7 @@ def build_integrated_result(
             "ref_id":     s["track_id"],
             "label":      s["text"],
             "confidence": s["confidence"],
+            "crop_path":  s.get("best_crop_path"),    # 썸네일
         })
     timeline.sort(key=lambda x: (x["frame"], x["kind"]))
 

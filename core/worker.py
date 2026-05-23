@@ -168,7 +168,7 @@ class AnalysisWorker(QThread):
                 "--source", self.video_path,
                 "--tracker", str(sign_tracker_yaml),
                 "--imgsz", "960",                  # 640 → 960
-                "--conf", "0.8",                   # 0.5 → 0.8
+                "--conf", "0.5",                   # 0.5 → 0.8
                 "--iou", "0.5",
                 "--pad_ratio", "0.18",             # 추가
                 "--device", "0",

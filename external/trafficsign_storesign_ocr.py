@@ -6,6 +6,7 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -58,6 +59,10 @@ def parse_args() -> argparse.Namespace:
 
     # PaddleOCR 3.x: 결과 필터 임계 (drop_score 대신 이걸 씀)
     p.add_argument("--text_rec_score_thresh", type=float, default=0.0, help="텍스트 인식 결과 필터 임계(0이면 거의 필터 X)")
+
+    # 다중 OCR 변형 (original/enhanced/gray)
+    p.add_argument("--ocr_variants", default="original,enhanced,gray",
+                   help="OCR 변형 종류 CSV (original/enhanced/gray)")
 
     return p.parse_args()
 
@@ -163,6 +168,55 @@ def image_quality_score(img_bgr: np.ndarray) -> float:
 
 
 # ----------------------------
+# 이미지 향상 변형
+# ----------------------------
+def _upscale_if_small(img: np.ndarray, min_side: int = 640) -> np.ndarray:
+    h, w = img.shape[:2]
+    if min(h, w) >= min_side:
+        return img
+    scale = min_side / min(h, w)
+    return cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
+
+
+def enhance_crop(img_bgr: np.ndarray) -> np.ndarray:
+    """저대비 크롭의 텍스트 가독성 향상"""
+    img = _upscale_if_small(img_bgr)
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_clahe = clahe.apply(l)
+    blur = cv2.GaussianBlur(l_clahe, (0, 0), 1.5)
+    l_blend = cv2.addWeighted(l_clahe, 0.7, blur, 0.3, 0)
+    return cv2.cvtColor(cv2.merge([l_blend, a, b]), cv2.COLOR_LAB2BGR)
+
+
+def gray_enhance_crop(img_bgr: np.ndarray) -> np.ndarray:
+    """채색 노이즈 제거 후 명암 균일화"""
+    img = _upscale_if_small(img_bgr)
+    gray = cv2.equalizeHist(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+
+def get_ocr_variants(img: np.ndarray, variants_str: str) -> List[Tuple[str, np.ndarray]]:
+    requested = [v.strip().lower() for v in variants_str.split(",") if v.strip()]
+    if not requested:
+        requested = ["original"]
+    result: List[Tuple[str, np.ndarray]] = []
+    seen: set = set()
+    for name in requested:
+        if name in seen:
+            continue
+        seen.add(name)
+        if name == "original":
+            result.append(("original", _upscale_if_small(img)))
+        elif name == "enhanced":
+            result.append(("enhanced", enhance_crop(img)))
+        elif name == "gray":
+            result.append(("gray", gray_enhance_crop(img)))
+    return result
+
+
+# ----------------------------
 # Final sanity filter
 # ----------------------------
 _L_BASE = 0x1100
@@ -212,6 +266,73 @@ def is_valid_final_text(text: str) -> bool:
         if (not ch.isalnum()) and (not _is_hangul_syllable(ch)):
             return False
     return True
+
+
+# ----------------------------
+# 도로 용어 후처리
+# ----------------------------
+_HANGUL_EN_RE = re.compile(r"[^0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣ\s.,·:/\\-]")
+_ENGLISH_ROAD_TERMS = [
+    "Ahead", "Airport", "Apgujeong", "Assembly", "Bank", "Beotigogae", "Bldg",
+    "Br", "Busan", "Cemetery", "Changdeokgung", "Changgyeonggung", "Cheonggye",
+    "City", "Council", "Daebang", "Euljiro", "Expressway", "Expwy", "Gangbyeon",
+    "Gimpo", "Hall", "Hangang", "Hangang-daero", "Hangangdaegyo", "Hannamdaegyo",
+    "Heunginjimun", "High", "Hanyang", "Incheon", "Itaewon", "Jongno", "Junction",
+    "Korea", "Myeongdong", "Namsan", "Natl", "Olympic", "Oksu", "Park", "Rotary",
+    "Sch", "Seodaemun", "Seongsandaegyo", "Seoul", "Seoulgyo", "Sinchon", "Sinsa",
+    "Station", "Stadium", "Stn", "Sookmyung", "Sungnyemun", "Tunnel", "Toegye-ro",
+    "Univ", "Wonhyodaegyo", "World", "Womens", "Yaksu", "Yanghwa", "Yangjae",
+    "Yeomchang", "Yeomcheongyo", "Yeongdeungpo", "Yeouidaebang-ro", "Yeouidong-ro",
+    "Yeouigyo", "Yongsan",
+]
+_ROAD_REPLACEMENTS = [
+    (re.compile(r"\bNamsar\s*Park\b", re.IGNORECASE), "Namsan Park"),
+    (re.compile(r"\bNamsarPark\b", re.IGNORECASE), "Namsan Park"),
+    (re.compile(r"\bHannandaegyo\b", re.IGNORECASE), "Hannamdaegyo"),
+    (re.compile(r"\bAlrport\b", re.IGNORECASE), "Airport"),
+    (re.compile(r"\bArport\b", re.IGNORECASE), "Airport"),
+    (re.compile(r"\bSooul\b", re.IGNORECASE), "Seoul"),
+    (re.compile(r"\bCily\b", re.IGNORECASE), "City"),
+    (re.compile(r"\bHal\b", re.IGNORECASE), "Hall"),
+    (re.compile(r"\bltaewon\b"), "Itaewon"),
+    (re.compile(r"\bStadum\b", re.IGNORECASE), "Stadium"),
+    (re.compile(r"\bCouncll\b", re.IGNORECASE), "Council"),
+    (re.compile(r"\bRolary\b", re.IGNORECASE), "Rotary"),
+    (re.compile(r"(\d)치로"), r"\1차로"),
+    (re.compile(r"(\d)차모"), r"\1차로"),
+    (re.compile(r"울지로|올지로"), "을지로"),
+    (re.compile(r"증로"), "종로"),
+    (re.compile(r"승례문|송례문"), "숭례문"),
+    (re.compile(r"청겨|성계|원계"), "청계"),
+]
+
+
+def _fuzzy_en_token(match: "re.Match[str]") -> str:
+    token = match.group(0)
+    if len(token) < 4 or any(c.isdigit() for c in token):
+        return token
+    token_key = token.lower().replace(".", "")
+    best_term, best_ratio = token, 0.0
+    for term in _ENGLISH_ROAD_TERMS:
+        ratio = SequenceMatcher(None, token_key, term.lower().replace(".", "")).ratio()
+        if ratio > best_ratio:
+            best_ratio, best_term = ratio, term
+    threshold = 0.88 if len(token) <= 6 else 0.84
+    return best_term if best_ratio >= threshold else token
+
+
+def postprocess_ocr_text(text: str) -> str:
+    """오인식 패턴 교정 및 한/영 경계 자동 띄어쓰기"""
+    text = _HANGUL_EN_RE.sub(" ", text or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return ""
+    for pattern, replacement in _ROAD_REPLACEMENTS:
+        text = pattern.sub(replacement, text)
+    text = re.sub(r"([가-힣])([A-Za-z])", r"\1 \2", text)
+    text = re.sub(r"([A-Za-z])([가-힣])", r"\1 \2", text)
+    text = re.sub(r"\b([A-Za-z][A-Za-z.-]*)\b", _fuzzy_en_token, text)
+    return re.sub(r"\s+", " ", text).strip(" ,")
 
 
 # ----------------------------
@@ -827,18 +948,18 @@ def run_ocr_fusion_on_crops(args: argparse.Namespace, crops_root: Path, out_root
                 items: List[Dict[str, Any]] = []
 
                 if img is not None:
-                    # 안정성을 위해 "파일 경로"로 먼저 시도 (PaddleOCR 3.x에서 경로 입력이 가장 안정적인 편)
-                    lines = run_ocr_on_input(ocr, str(img_path))
-                    if not lines:
-                        # 혹시 경로 입력이 막혀있으면 ndarray로도 시도
-                        lines = run_ocr_on_input(ocr, img)
+                    for variant_name, variant_img in get_ocr_variants(img, args.ocr_variants):
+                        lines = run_ocr_on_input(ocr, variant_img)
+                        if not lines and variant_name == "original":
+                            # 원본 변형은 경로 입력도 시도 (PaddleOCR 3.x 안정성)
+                            lines = run_ocr_on_input(ocr, str(img_path))
 
-                    joined, jprob = join_lines(lines)
-                    if good_text(joined):
-                        nt = norm_text(joined)
-                        if nt:
-                            items.append({"text": nt, "prob": float(jprob), "variant": "orig"})
-                            frame_items.append((fr, nt, float(jprob), float(q)))
+                        joined, jprob = join_lines(lines)
+                        if good_text(joined):
+                            nt = postprocess_ocr_text(norm_text(joined))
+                            if nt:
+                                items.append({"text": nt, "prob": float(jprob), "variant": variant_name})
+                                frame_items.append((fr, nt, float(jprob), float(q)))
 
                 frame_texts_out.append({"frame": fr, "file": img_path.name, "quality": float(q), "items": items})
 

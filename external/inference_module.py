@@ -41,7 +41,7 @@ print(f"[DEBUG][INF] YOLO exists? {os.path.exists(YOLO_WEIGHTS)}", flush=True)
 print(f"[DEBUG][INF] OCR exists?  {os.path.exists(OCR_WEIGHTS)}", flush=True)
 
 # 추론 파라미터
-CONFIDENCE_THRESHOLD = 0.35
+CONFIDENCE_THRESHOLD = 0.3
 OCR_CONFIDENCE_THRESHOLD = 0.3
 SKIP_FRAMES = 500
 
