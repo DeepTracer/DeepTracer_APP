@@ -147,6 +147,11 @@ class AnalysisWorker(QThread):
             if not path.exists():
                 return {"success": False, "error": f"{label} not found: {path}"}
 
+        print("[DEBUG][WORKER] sign_crop_script =", sign_crop_script, flush=True)
+        print("[DEBUG][WORKER] sign_ocr_script  =", sign_ocr_script, flush=True)
+        print("[DEBUG][WORKER] sign_model       =", sign_model, flush=True)
+        print("[DEBUG][WORKER] sign_tracker     =", sign_tracker_yaml, flush=True)
+
         crop_out_root = os.path.join(output_dir, "sign_crop")
         crop_folder_name = "track_id_crops"
         crops_root = os.path.join(crop_out_root, crop_folder_name)
@@ -155,15 +160,17 @@ class AnalysisWorker(QThread):
 
         self.progress.emit("표지판/간판 추적 + crop 추출 중...", 55)
 
+        # ─── 크롭 단계 (새 모델 기본값 반영) ──────────────────────
         crop_proc = subprocess.Popen(
             [
                 sys.executable, str(sign_crop_script),
                 "--model", str(sign_model),
                 "--source", self.video_path,
                 "--tracker", str(sign_tracker_yaml),
-                "--imgsz", "640",
-                "--conf", "0.5",
+                "--imgsz", "960",                  # 640 → 960
+                "--conf", "0.8",                   # 0.5 → 0.8
                 "--iou", "0.5",
+                "--pad_ratio", "0.18",             # 추가
                 "--device", "0",
                 "--out_root", crop_out_root,
                 "--out_crops", crop_folder_name,
@@ -179,6 +186,7 @@ class AnalysisWorker(QThread):
         last_crop_line = ""
         for line in crop_proc.stdout:
             last_crop_line = line.strip()
+            print("[SIGN_CROP]", last_crop_line, flush=True)
 
         crop_proc.wait()
         if crop_proc.returncode != 0:
@@ -198,6 +206,7 @@ class AnalysisWorker(QThread):
 
         self.progress.emit("표지판/간판 OCR fusion 중...", 80)
 
+        # ─── OCR 단계 (다중 변형 + 도로 용어 후처리 활용) ────────
         ocr_proc = subprocess.Popen(
             [
                 sys.executable, str(sign_ocr_script),
@@ -207,6 +216,8 @@ class AnalysisWorker(QThread):
                 "--max_frames_per_track", "80",
                 "--min_text_len", "2",
                 "--review_consensus_thresh", "0.58",
+                "--ocr_variants", "original,enhanced,gray",   # 추가
+                "--use_textline_orientation",                  # 추가
             ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -218,6 +229,7 @@ class AnalysisWorker(QThread):
         last_ocr_line = ""
         for line in ocr_proc.stdout:
             last_ocr_line = line.strip()
+            print("[SIGN_OCR]", last_ocr_line, flush=True)
 
         ocr_proc.wait()
         if ocr_proc.returncode != 0:
